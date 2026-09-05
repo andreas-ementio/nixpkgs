@@ -2,6 +2,7 @@
   stdenv,
   buildGoModule,
   callPackage,
+  emptyDirectory,
   fetchFromGitHub,
   lib,
 
@@ -15,6 +16,7 @@
   protoc-gen-validate,
   statik,
   writableTmpDirAsHomeHook,
+  yq-go,
 }:
 
 let
@@ -55,10 +57,75 @@ let
     ];
   };
 
-  # Buf downloads dependencies from an external repo - there doesn't seem to
-  # really be any good way around it. We'll use a fixed-output derivation so it
-  # can download what it needs, and output the relevant generated code for use
-  # during the main build.
+  # `buf export` writes out exactly the content of the pinned BSR commit, so
+  # this hash tracks upstream's proto/buf.lock and nothing else. Fetching the
+  # dependencies here rather than letting buf reach the network during codegen
+  # is what keeps the generated output out of a fixed-output derivation - see
+  # generateProtobufCode below.
+  fetchProtobufDep =
+    {
+      remote,
+      owner,
+      repository,
+      commit,
+      hash,
+    }:
+    stdenv.mkDerivation {
+      pname = "${repository}-buf-dep";
+      version = commit;
+
+      src = emptyDirectory;
+
+      nativeBuildInputs = [
+        buf
+        cacert
+        writableTmpDirAsHomeHook
+      ];
+
+      buildPhase = ''
+        runHook preBuild
+        buf export --output=$out ${lib.escapeShellArg "${remote}/${owner}/${repository}:${commit}"}
+        runHook postBuild
+      '';
+
+      dontInstall = true;
+
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+      outputHash = hash;
+    };
+
+  # Mirrors proto/buf.lock; the attribute name is the directory the export is
+  # mounted at inside the source tree.
+  protobufDeps = {
+    protoc-gen-validate = {
+      remote = "buf.build";
+      owner = "envoyproxy";
+      repository = "protoc-gen-validate";
+      commit = "6607b10f00ed4a3d98f906807131c44a";
+      hash = "sha256-xil1euaa8TI7rlCdb5tnFVfKgorRMbtmvJSsE2hsmAs=";
+    };
+    googleapis = {
+      remote = "buf.build";
+      owner = "googleapis";
+      repository = "googleapis";
+      commit = "75b4300737fb4efca0831636be94e517";
+      hash = "sha256-Kb5BLmfInJe1Q5rollD0B8gPOVkeFtIeDhQ/WGpIKmY=";
+    };
+    grpc-gateway = {
+      remote = "buf.build";
+      owner = "grpc-ecosystem";
+      repository = "grpc-gateway";
+      commit = "a1ecdc58eccd49aa8bea2a7a9022dc27";
+      hash = "sha256-Kpu8XdLTU5Z6omb58Ogik/RjDHLH8e6SqPuwiRYY9nE=";
+    };
+  };
+
+  # buf normally resolves proto/buf.yaml's `deps` over the network, which would
+  # force the generated code into a fixed-output derivation whose hash depends
+  # on the versions of buf and of every protoc plugin below. Instead the deps
+  # are prefetched above and registered as plain workspace directories, so this
+  # is an ordinary sandboxed build that just rebuilds when a plugin changes.
   generateProtobufCode =
     {
       pname,
@@ -66,7 +133,6 @@ let
       bufArgs ? "",
       workDir ? ".",
       outputPath,
-      hash,
     }:
     stdenv.mkDerivation {
       pname = "${pname}-buf-generated";
@@ -76,14 +142,24 @@ let
 
       nativeBuildInputs = nativeBuildInputs ++ [
         buf
-        cacert
         writableTmpDirAsHomeHook
+        yq-go
       ];
 
       buildPhase = ''
         runHook preBuild
+
+        yq --inplace '.deps = []' proto/buf.yaml
+        yq --inplace '.deps = []' proto/buf.lock
+        ${lib.concatLines (
+          lib.mapAttrsToList (name: dep: ''
+            ln -s ${fetchProtobufDep dep} ${name}
+            yq --inplace '.directories += [ "${name}" ]' buf.work.yaml
+          '') protobufDeps
+        )}
         cd ${workDir}
         buf generate ${bufArgs}
+
         runHook postBuild
       '';
 
@@ -92,14 +168,13 @@ let
         cp -r ${outputPath} $out
         runHook postInstall
       '';
-
-      outputHashMode = "recursive";
-      outputHashAlgo = "sha256";
-      outputHash = hash;
     };
 
   protobufGenerated = generateProtobufCode {
     pname = "zitadel";
+    # the workspace now also holds the prefetched deps, so scope generation
+    # to zitadel's own module
+    bufArgs = "proto";
     nativeBuildInputs = [
       grpc-gateway
       protocPlugins
@@ -109,7 +184,6 @@ let
       protoc-gen-validate
     ];
     outputPath = ".artifacts";
-    hash = "sha256-ut0C9QdWtYDj12ODnEXrqNErX+g9g7n1uqnKYog14fY=";
   };
 in
 buildGoModule (finalAttrs: {
@@ -160,6 +234,7 @@ buildGoModule (finalAttrs: {
   doCheck = false;
 
   passthru = {
+    inherit fetchProtobufDep;
     console = callPackage (import ./console.nix {
       inherit generateProtobufCode version zitadelRepo;
     }) { };

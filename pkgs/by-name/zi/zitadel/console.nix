@@ -30,7 +30,6 @@ let
     workDir = "console";
     bufArgs = "../proto --include-imports --include-wkt";
     outputPath = "src/app/proto";
-    hash = "sha256-kqLaN+toNsxO8Q98OPqXKwXz6be+2+obgLfwfymGMsE=";
   };
 
   # API v2 stubs (protobuf-es) for the @zitadel/proto workspace package, which
@@ -41,7 +40,6 @@ let
     workDir = "packages/zitadel-proto";
     bufArgs = "../../proto";
     outputPath = ".";
-    hash = "sha256-XYpVoMCQgmsMUGS7BBHTLfu5lS85Lau+sow1QW2WtSk=";
   };
 in
 stdenv.mkDerivation (finalAttrs: {
