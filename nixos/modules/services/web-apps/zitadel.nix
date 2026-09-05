@@ -131,7 +131,7 @@ in
               CertPath = "/path/to/cert.pem";
               KeyPath = "/path/to/cert.key";
             };
-            Database.cockroach.Host = "db.example.com";
+            Database.postgres.Host = "db.example.com";
           };
         '';
         description = ''
@@ -196,6 +196,15 @@ in
         message = ''
           A TLS certificate and key must be configured in
           services.zitadel.settings.TLS if services.zitadel.tlsMode is enabled.
+        '';
+      }
+      {
+        assertion = !((cfg.settings.Database or { }) ? cockroach);
+        message = ''
+          ZITADEL 3.0 removed CockroachDB support. Migrate the database to
+          PostgreSQL and configure services.zitadel.settings.Database.postgres
+          instead, see
+          https://zitadel.com/docs/self-hosting/manage/cli/mirror
         '';
       }
     ];
